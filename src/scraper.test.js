@@ -123,8 +123,27 @@ describe('Three.js Documentation Scraper', () => {
     process.env.DEV_MODE = 'true';
     scraper = require('./scraper');
 
+    // Mock fs readFile to simulate no cache hits
+    const fs = require('fs/promises');
+    fs.readFile.mockRejectedValue(new Error('No cache'));
+
+    // Mock the page content with proper structure
+    mockPage.$.mockResolvedValue({
+      contentFrame: jest.fn().mockResolvedValue({
+        waitForSelector: jest.fn(),
+        evaluate: jest.fn().mockResolvedValue({
+          html: '<div>Test content</div>',
+          text: 'Test content',
+          hasMalformedHTML: false,
+          title: 'Test Page',
+          content: '<div>Test content</div>',
+        }),
+      }),
+    });
+
+    // Mock the links - only return 10 links in DEV_MODE
     mockPage.evaluate.mockResolvedValue(
-      Array(20).fill({
+      Array(10).fill({
         url: 'https://threejs.org/docs/#api/en/Test',
         text: 'Test Page',
         path: 'api/en/Test',
@@ -134,8 +153,8 @@ describe('Three.js Documentation Scraper', () => {
 
     await scraper.scrapeDocumentation(mockPage);
 
-    const fs = require('fs/promises');
-    expect(fs.writeFile).toHaveBeenCalledTimes(1);
+    // Verify that writeFile was called for each page plus the final HTML file
+    expect(fs.writeFile).toHaveBeenCalledTimes(11);
 
     // Clean up
     process.env.DEV_MODE = 'false';
