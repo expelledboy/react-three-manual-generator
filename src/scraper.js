@@ -100,6 +100,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { setTimeout } = global;
+const { Buffer } = require('node:buffer');
 
 // Configuration object
 const config = {
@@ -123,12 +124,13 @@ const config = {
   },
 };
 
-// Logging functions
+// Enhance logging functions
 const log = {
   info: (msg, ...args) => console.log(`[INFO] ${msg}`, ...args),
   error: (msg, ...args) => console.error(`[ERROR] ${msg}`, ...args),
-  debug: (msg, ...args) => config.DEV_MODE && console.log(`[DEBUG] ${msg}`, ...args),
+  debug: (msg, ...args) => console.log(`[DEBUG] ${msg}`, ...args),
   section: (msg) => console.log(`\n=== ${msg} ===`),
+  perf: (msg, startTime) => console.log(`[PERF] ${msg}: ${Date.now() - startTime}ms`),
 };
 
 // Command line argument parsing
@@ -136,56 +138,73 @@ const CLEAR_CACHE = process.argv.includes('--clear-cache');
 
 // Cache management functions
 async function initializeCache() {
+  log.debug('Initializing cache system');
   if (CLEAR_CACHE) {
     try {
+      log.debug('Attempting to clear cache directory');
       await fs.rm(config.CACHE_DIR, { recursive: true, force: true });
       log.info('Cache cleared successfully');
     } catch (error) {
       log.error('Failed to clear cache:', error);
     }
   }
+  log.debug(`Ensuring cache directory exists: ${config.CACHE_DIR}`);
   await fs.mkdir(config.CACHE_DIR, { recursive: true });
 }
 
 function getCacheKey(url) {
   const hash = crypto.createHash('md5').update(url).digest('hex');
-  return path.join(config.CACHE_DIR, `${hash}_v${config.CACHE_VERSION}.json`);
+  const cacheKey = path.join(config.CACHE_DIR, `${hash}_v${config.CACHE_VERSION}.json`);
+  log.debug(`Generated cache key for ${url}: ${cacheKey}`);
+  return cacheKey;
 }
 
 async function getFromCache(url) {
-  if (!config.USE_CACHE) return null;
+  if (!config.USE_CACHE) {
+    log.debug('Cache disabled, skipping cache lookup');
+    return null;
+  }
   try {
     const cacheFile = getCacheKey(url);
+    log.debug(`Attempting to read cache file: ${cacheFile}`);
     const data = await fs.readFile(cacheFile, 'utf8');
-    log.debug(`Cache hit for ${url}`);
+    log.debug(`Cache hit for ${url} (${Buffer.byteLength(data, 'utf8')} bytes)`);
     return JSON.parse(data);
-  } catch {
-    log.debug(`Cache miss for ${url}`);
+  } catch (error) {
+    log.debug(`Cache miss for ${url}: ${error.code}`);
     return null;
   }
 }
 
 async function saveToCache(url, data) {
-  if (!config.USE_CACHE) return;
+  if (!config.USE_CACHE) {
+    log.debug('Cache disabled, skipping cache save');
+    return;
+  }
   try {
     const cacheFile = getCacheKey(url);
-    await fs.writeFile(cacheFile, JSON.stringify(data, null, 2));
-    log.debug(`Cached ${url}`);
+    const jsonData = JSON.stringify(data, null, 2);
+    log.debug(`Writing ${Buffer.byteLength(jsonData, 'utf8')} bytes to cache for ${url}`);
+    await fs.writeFile(cacheFile, jsonData);
+    log.debug(`Successfully cached ${url}`);
   } catch (error) {
-    log.error('Failed to write cache:', error);
+    log.error(`Failed to write cache for ${url}:`, error);
   }
 }
 
 // Browser management functions
 async function createBrowser() {
+  log.debug('Initializing Puppeteer browser');
   try {
+    const startTime = Date.now();
     const browser = await puppeteer.launch({
       headless: true,
       args: ['--no-sandbox'],
     });
     const page = await browser.newPage();
+    log.debug('Setting page timeout:', config.TIMEOUT);
     await page.setDefaultTimeout(config.TIMEOUT);
-    log.info('Browser initialized');
+    log.perf('Browser initialization completed', startTime);
     return { browser, page };
   } catch (error) {
     log.error('Failed to initialize browser:', error);
@@ -197,12 +216,18 @@ async function createBrowser() {
 async function extractLinks(page) {
   const maxRetries = 2;
   let attempts = 0;
+  log.debug(`Starting link extraction (max retries: ${maxRetries})`);
 
   while (attempts < maxRetries) {
     try {
+      const startTime = Date.now();
+      log.debug(`Navigating to docs URL: ${config.DOCS_URL}`);
       await page.goto(config.DOCS_URL, { waitUntil: 'networkidle0' });
+      log.debug('Waiting for panel selector');
       await page.waitForSelector(config.SELECTORS.panel);
+      log.perf('Page navigation completed', startTime);
 
+      log.debug('Evaluating page for documentation links');
       const links = await page.evaluate((selectors) => {
         const findSection = (link) => {
           const sectionEl = link.closest('div')?.previousElementSibling;
@@ -212,7 +237,10 @@ async function extractLinks(page) {
           return 'Reference';
         };
 
-        return Array.from(document.querySelectorAll(selectors.docLinks)).map((link) => ({
+        const links = Array.from(document.querySelectorAll(selectors.docLinks));
+        console.debug(`Found ${links.length} raw links`);
+
+        return links.map((link) => ({
           url: link.href,
           text: link.textContent.trim(),
           path: link.getAttribute('href').split('#')[1] || link.getAttribute('href'),
@@ -220,7 +248,13 @@ async function extractLinks(page) {
         }));
       }, config.SELECTORS);
 
-      log.info(`Found ${links.length} documentation links`);
+      log.debug(`Link extraction details:
+        Total links: ${links.length}
+        Unique sections: ${new Set(links.map((l) => l.section)).size}
+        External links: ${links.filter((l) => !l.url.includes(config.BASE_URL)).length}
+      `);
+
+      log.perf('Link extraction completed', startTime);
       return links;
     } catch (error) {
       if (error.message.includes('429')) {
@@ -229,10 +263,12 @@ async function extractLinks(page) {
         throw new Error(msg);
       }
       attempts++;
+      log.debug(`Link extraction attempt ${attempts} failed: ${error.message}`);
       if (attempts === maxRetries) {
-        log.error('Failed to extract links:', error);
+        log.error('Failed to extract links after all retries:', error);
         throw error;
       }
+      log.debug(`Waiting 1000ms before retry ${attempts + 1}`);
       await new Promise((resolve) => {
         setTimeout(resolve, 1000);
       });
@@ -242,35 +278,45 @@ async function extractLinks(page) {
 
 // Content extraction functions
 async function extractContent(page, url, title) {
+  const startTime = Date.now();
   log.section(`Extracting Content: ${title}`);
+  log.debug(`Processing URL: ${url}`);
 
   const cached = await getFromCache(url);
   if (cached) {
-    log.info(`Using cached content for: ${cached.title}`);
+    log.debug(
+      `Using cached content for: ${cached.title} (${Buffer.byteLength(cached.content, 'utf8')} bytes)`
+    );
     return cached;
   }
 
   try {
+    log.debug(`Navigating to page: ${url}`);
     await page.goto(url, { waitUntil: 'networkidle0' });
 
     try {
+      log.debug('Waiting for iframe to appear');
       await page.waitForSelector(config.SELECTORS.iframe, { timeout: config.TIMEOUT });
     } catch (error) {
       throw new Error(`Timeout waiting for iframe: ${error.message}`);
     }
 
+    log.debug('Looking for iframe element');
     const frameHandle = await page.$(config.SELECTORS.iframe);
     if (!frameHandle) {
       throw new Error('No iframe found');
     }
 
+    log.debug('Getting iframe content frame');
     const frame = await frameHandle.contentFrame();
     if (!frame) {
       throw new Error('Failed to get iframe content');
     }
 
+    log.debug('Waiting for iframe body');
     await frame.waitForSelector('body');
 
+    log.debug('Extracting content from frame');
     const content = await extractFrameContent(frame);
     if (!content || content.error) {
       throw new Error(content?.error || 'No content found');
@@ -282,7 +328,14 @@ async function extractContent(page, url, title) {
       hasMalformedHTML: content.hasMalformedHTML,
     };
 
+    log.debug(`Content extraction stats:
+      Content size: ${Buffer.byteLength(content.html, 'utf8')} bytes
+      Text length: ${content.text.length} characters
+      Has malformed HTML: ${content.hasMalformedHTML}
+    `);
+
     await saveToCache(url, result);
+    log.perf(`Content extraction completed for ${title}`, startTime);
     return result;
   } catch (error) {
     log.error(`Failed to extract content from ${url}:`, error);
@@ -505,8 +558,16 @@ function generateBody(documentation) {
 
 // Main scraping function
 async function scrapeDocumentation(testPage) {
+  const totalStartTime = Date.now();
   log.section('Starting Three.js Documentation Scraper');
   log.info('Mode:', config.DEV_MODE ? 'DEVELOPMENT' : 'PRODUCTION');
+  log.debug(`Configuration:
+    DEV_MODE: ${config.DEV_MODE}
+    DEV_PAGE_LIMIT: ${config.DEV_PAGE_LIMIT}
+    TIMEOUT: ${config.TIMEOUT}ms
+    USE_CACHE: ${config.USE_CACHE}
+    CACHE_VERSION: ${config.CACHE_VERSION}
+  `);
 
   if (CLEAR_CACHE) {
     log.info('Clear cache flag detected');
@@ -514,7 +575,6 @@ async function scrapeDocumentation(testPage) {
 
   await initializeCache();
 
-  // Exit early if only clearing cache
   if (CLEAR_CACHE) {
     log.info('Cache cleared. Exiting...');
     return;
@@ -524,46 +584,69 @@ async function scrapeDocumentation(testPage) {
 
   try {
     if (testPage) {
+      log.debug('Using provided test page');
       page = testPage;
     } else {
+      log.debug('Creating new browser instance');
       ({ browser, page } = await createBrowser());
     }
 
+    const linkStartTime = Date.now();
     const links = await extractLinks(page);
+    log.perf('Link extraction total time', linkStartTime);
 
-    // Limit pages in DEV_MODE
     const pagesToProcess = config.DEV_MODE ? links.slice(0, config.DEV_PAGE_LIMIT) : links;
-
-    log.info(`Will scrape ${pagesToProcess.length} pages${config.DEV_MODE ? ' (DEV_MODE)' : ''}`);
+    log.debug(
+      `Processing ${pagesToProcess.length} pages${config.DEV_MODE ? ' (limited by DEV_MODE)' : ''}`
+    );
 
     const documentation = [];
+    let processedCount = 0;
+    const contentStartTime = Date.now();
+
     for (const link of pagesToProcess) {
+      const pageStartTime = Date.now();
       const content = await extractContent(page, link.url, link.text);
       documentation.push({
         title: link.text,
         content: content.content,
         section: link.section || 'Reference',
       });
+      processedCount++;
+      log.debug(
+        `Progress: ${processedCount}/${pagesToProcess.length} pages (${Math.round((processedCount / pagesToProcess.length) * 100)}%)`
+      );
+      log.perf(`Page processing time for ${link.text}`, pageStartTime);
     }
 
-    log.info(`Successfully scraped ${documentation.length} pages`);
+    log.perf('Content extraction total time', contentStartTime);
+    log.debug(`Documentation assembly stats:
+      Total pages: ${documentation.length}
+      Total sections: ${new Set(documentation.map((d) => d.section)).size}
+      Average content size: ${Math.round(documentation.reduce((acc, doc) => acc + Buffer.byteLength(doc.content, 'utf8'), 0) / documentation.length)} bytes
+    `);
 
-    // Generate HTML from documentation
+    const htmlStartTime = Date.now();
     const html = generateHTML(documentation);
+    log.perf('HTML generation time', htmlStartTime);
 
-    // Ensure output directory exists
+    log.debug(`Ensuring output directory exists: ${config.OUTPUT_DIR}`);
     await fs.mkdir(config.OUTPUT_DIR, { recursive: true });
 
-    // Write HTML file
     const outputPath = path.join(config.OUTPUT_DIR, 'index.html');
+    log.debug(`Writing output file: ${outputPath} (${Buffer.byteLength(html, 'utf8')} bytes)`);
     await fs.writeFile(outputPath, html);
 
     log.info(`Output saved to ${outputPath}`);
+    log.perf('Total execution time', totalStartTime);
   } catch (error) {
     log.error('Scraping failed:', error);
     throw error;
   } finally {
-    if (browser) await browser.close();
+    if (browser) {
+      log.debug('Closing browser');
+      await browser.close();
+    }
   }
 }
 
