@@ -2,7 +2,7 @@
 
 A tool to scrape and generate a single-page, offline-friendly version of the Three.js documentation manual.
 
-View it at: `https://expelledboy.github.io/threejs-manual-generator`
+View github pages [here](https://expelledboy.github.io/threejs-manual-generator/)
 
 ## Features
 
