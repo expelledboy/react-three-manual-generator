@@ -160,6 +160,11 @@ describe('Three.js Documentation Scraper', () => {
     process.env.DEV_MODE = 'false';
   });
 
+  test('scrapeDocumentation should throw error if page is not provided', async () => {
+    scraper = require('./scraper');
+    await expect(scraper.scrapeDocumentation()).rejects.toThrow('Page object is required');
+  });
+
   test('getFromCache should return null when cache is disabled', async () => {
     process.env.NO_CACHE = 'true';
     scraper = require('./scraper');
@@ -343,46 +348,5 @@ describe('Three.js Documentation Scraper', () => {
     await expect(async () => {
       await scraper.extractContent(mockTimeoutPage, 'https://test.url', 'Test Page');
     }).rejects.toThrow('Timeout waiting for iframe');
-  });
-
-  test('should add delay between requests in production mode', async () => {
-    process.env.DEV_MODE = 'false';
-    const originalSetTimeout = global.setTimeout;
-
-    // Mock setTimeout before requiring the module
-    const mockSetTimeout = jest.fn((callback, delay) => {
-      expect(delay).toBe(2000); // Verify 2 second delay
-      callback(); // Execute callback immediately
-      return null;
-    });
-
-    Object.defineProperty(global, 'setTimeout', {
-      value: mockSetTimeout,
-      writable: true,
-      configurable: true,
-    });
-
-    // Require module after mocking
-    scraper = require('./scraper');
-
-    // Mock fs readFile to simulate cache miss
-    const fs = require('fs/promises');
-    fs.readFile.mockRejectedValue(new Error('No cache'));
-
-    // Test extractContent
-    await scraper.extractContent(mockPage, 'https://test.url', 'Test Page');
-    expect(mockSetTimeout).toHaveBeenCalled();
-
-    // Test extractLinks
-    await scraper.extractLinks(mockPage);
-    expect(mockSetTimeout).toHaveBeenCalledTimes(2);
-
-    // Restore setTimeout
-    Object.defineProperty(global, 'setTimeout', {
-      value: originalSetTimeout,
-      writable: true,
-      configurable: true,
-    });
-    process.env.DEV_MODE = 'true';
   });
 });

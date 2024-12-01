@@ -13,7 +13,6 @@
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
     "clear-cache": "node src/scraper.js --clear-cache",
-    "ci": "npm run lint && npm run format && npm test",
     "prepare": "git config --local core.hooksPath .github/hooks",
     "update": "npm update --save && npm update --save-dev && npm install"
   },

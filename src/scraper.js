@@ -109,7 +109,6 @@ const config = {
   BASE_URL: 'https://threejs.org',
   DOCS_URL: 'https://threejs.org/docs/index.html#manual/en/introduction/Creating-a-scene',
   TIMEOUT: 30000,
-  REQUEST_DELAY: 2000,
   OUTPUT_DIR: 'docs',
   CACHE_DIR: '.cache',
   USE_CACHE: process.env.NO_CACHE !== 'true',
@@ -213,20 +212,6 @@ async function createBrowser() {
   }
 }
 
-// Link extraction functions
-async function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-async function addRateLimitDelay() {
-  if (!config.DEV_MODE) {
-    log.debug(`Sleeping for ${config.REQUEST_DELAY}ms to avoid rate limiting`);
-    await sleep(config.REQUEST_DELAY);
-  }
-}
-
 async function extractLinks(page) {
   const maxRetries = 2;
   let attempts = 0;
@@ -236,7 +221,6 @@ async function extractLinks(page) {
     try {
       const startTime = Date.now();
       log.debug(`Navigating to docs URL: ${config.DOCS_URL}`);
-      await addRateLimitDelay();
       await page.goto(config.DOCS_URL, { waitUntil: 'networkidle0' });
       log.debug('Waiting for panel selector');
       await page.waitForSelector(config.SELECTORS.panel);
@@ -307,7 +291,6 @@ async function extractContent(page, url, title) {
 
   try {
     log.debug(`Navigating to: ${url}`);
-    await addRateLimitDelay();
     await page.goto(url, { waitUntil: 'networkidle0' });
 
     try {
@@ -573,7 +556,11 @@ function generateBody(documentation) {
 }
 
 // Main scraping function
-async function scrapeDocumentation(testPage) {
+async function scrapeDocumentation(page) {
+  if (!page) {
+    throw new Error('Page object is required');
+  }
+
   const totalStartTime = Date.now();
   log.section('Starting Three.js Documentation Scraper');
   log.info('Mode:', config.DEV_MODE ? 'DEVELOPMENT' : 'PRODUCTION');
@@ -587,83 +574,90 @@ async function scrapeDocumentation(testPage) {
 
   if (CLEAR_CACHE) {
     log.info('Clear cache flag detected');
-  }
-
-  await initializeCache();
-
-  if (CLEAR_CACHE) {
+    await initializeCache();
     log.info('Cache cleared. Exiting...');
     return;
   }
 
-  let browser, page;
+  await initializeCache();
 
-  try {
-    if (testPage) {
-      log.debug('Using provided test page');
-      page = testPage;
-    } else {
-      log.debug('Creating new browser instance');
-      ({ browser, page } = await createBrowser());
-    }
+  const linkStartTime = Date.now();
+  const links = await extractLinks(page);
+  log.perf('Link extraction total time', linkStartTime);
 
-    const linkStartTime = Date.now();
-    const links = await extractLinks(page);
-    log.perf('Link extraction total time', linkStartTime);
+  const pagesToProcess = config.DEV_MODE ? links.slice(0, config.DEV_PAGE_LIMIT) : links;
+  log.debug(
+    `Processing ${pagesToProcess.length} pages${config.DEV_MODE ? ' (limited by DEV_MODE)' : ''}`
+  );
 
-    const pagesToProcess = config.DEV_MODE ? links.slice(0, config.DEV_PAGE_LIMIT) : links;
+  const documentation = [];
+  let processedCount = 0;
+  const contentStartTime = Date.now();
+
+  for (const link of pagesToProcess) {
+    const pageStartTime = Date.now();
+    const content = await extractContent(page, link.url, link.text);
+    documentation.push({
+      title: link.text,
+      content: content.content,
+      section: link.section || 'Reference',
+    });
+    processedCount++;
     log.debug(
-      `Processing ${pagesToProcess.length} pages${config.DEV_MODE ? ' (limited by DEV_MODE)' : ''}`
+      `Progress: ${processedCount}/${pagesToProcess.length} pages (${Math.round(
+        (processedCount / pagesToProcess.length) * 100
+      )}%)`
     );
-
-    const documentation = [];
-    let processedCount = 0;
-    const contentStartTime = Date.now();
-
-    for (const link of pagesToProcess) {
-      const pageStartTime = Date.now();
-      const content = await extractContent(page, link.url, link.text);
-      documentation.push({
-        title: link.text,
-        content: content.content,
-        section: link.section || 'Reference',
-      });
-      processedCount++;
-      log.debug(
-        `Progress: ${processedCount}/${pagesToProcess.length} pages (${Math.round((processedCount / pagesToProcess.length) * 100)}%)`
-      );
-      log.perf(`Page processing time for ${link.text}`, pageStartTime);
-    }
-
-    log.perf('Content extraction total time', contentStartTime);
-    log.debug(`Documentation assembly stats:
-      Total pages: ${documentation.length}
-      Total sections: ${new Set(documentation.map((d) => d.section)).size}
-      Average content size: ${Math.round(documentation.reduce((acc, doc) => acc + Buffer.byteLength(doc.content, 'utf8'), 0) / documentation.length)} bytes
-    `);
-
-    const htmlStartTime = Date.now();
-    const html = generateHTML(documentation);
-    log.perf('HTML generation time', htmlStartTime);
-
-    log.debug(`Ensuring output directory exists: ${config.OUTPUT_DIR}`);
-    await fs.mkdir(config.OUTPUT_DIR, { recursive: true });
-
-    const outputPath = path.join(config.OUTPUT_DIR, 'index.html');
-    log.debug(`Writing output file: ${outputPath} (${Buffer.byteLength(html, 'utf8')} bytes)`);
-    await fs.writeFile(outputPath, html);
-
-    log.info(`Output saved to ${outputPath}`);
-    log.perf('Total execution time', totalStartTime);
-  } catch (error) {
-    log.error('Scraping failed:', error);
-    throw error;
-  } finally {
-    if (browser) {
-      log.debug('Closing browser');
-      await browser.close();
-    }
+    log.perf(`Page processing time for ${link.text}`, pageStartTime);
   }
+
+  log.perf('Content extraction total time', contentStartTime);
+  log.debug(`Documentation assembly stats:
+    Total pages: ${documentation.length}
+    Total sections: ${new Set(documentation.map((d) => d.section)).size}
+    Average content size: ${Math.round(
+      documentation.reduce((acc, doc) => acc + Buffer.byteLength(doc.content, 'utf8'), 0) /
+        documentation.length
+    )} bytes
+  `);
+
+  const htmlStartTime = Date.now();
+  const html = generateHTML(documentation);
+  log.perf('HTML generation time', htmlStartTime);
+
+  log.debug(`Ensuring output directory exists: ${config.OUTPUT_DIR}`);
+  await fs.mkdir(config.OUTPUT_DIR, { recursive: true });
+
+  const outputPath = path.join(config.OUTPUT_DIR, 'index.html');
+  log.debug(`Writing output file: ${outputPath} (${Buffer.byteLength(html, 'utf8')} bytes)`);
+  await fs.writeFile(outputPath, html);
+
+  log.info(`Output saved to ${outputPath}`);
+  log.perf('Total execution time', totalStartTime);
+}
+
+// Main function to handle browser lifecycle
+const main = async () => {
+  const { browser, page } = await createBrowser();
+  try {
+    log.debug('Starting documentation scraping');
+    await scrapeDocumentation(page);
+  } finally {
+    log.debug('Closing browser');
+    await browser.close();
+  }
+};
+
+// Run scraper if file is executed directly
+if (require.main === module) {
+  (async () => {
+    try {
+      await main();
+    } catch (error) {
+      log.error('Scraping failed:', error);
+      process.exit(1);
+    }
+  })();
 }
 
 // Export functions for testing
@@ -680,9 +674,5 @@ module.exports = {
   getFromCache,
   saveToCache,
   config,
+  main,
 };
-
-// Run scraper if file is executed directly
-if (require.main === module) {
-  scrapeDocumentation().catch(() => process.exit(1));
-}
