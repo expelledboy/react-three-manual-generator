@@ -2,7 +2,7 @@
 
 Scrapes the Three.js documentation into a single HTML file for Cursor AI integration. Preserves original styling, search functionality, and navigation.
 
-View it at: `https://expelledboy.github.io/react-three-manual-generator`
+View it at: `https://expelledboy.github.io/threejs-manual-generator`
 
 ## Quick Start
 
