@@ -344,4 +344,41 @@ describe('Three.js Documentation Scraper', () => {
       await scraper.extractContent(mockTimeoutPage, 'https://test.url', 'Test Page');
     }).rejects.toThrow('Timeout waiting for iframe');
   });
+
+  test('extractContent should add delay between requests in production mode', async () => {
+    process.env.DEV_MODE = 'false';
+    const originalSetTimeout = global.setTimeout;
+
+    // Mock setTimeout before requiring the module
+    const mockSetTimeout = jest.fn((callback, delay) => {
+      expect(delay).toBe(1000); // Verify 1 second delay
+      callback(); // Execute callback immediately
+      return null;
+    });
+
+    Object.defineProperty(global, 'setTimeout', {
+      value: mockSetTimeout,
+      writable: true,
+      configurable: true,
+    });
+
+    // Require module after mocking
+    scraper = require('./scraper');
+
+    // Mock fs readFile to simulate cache miss
+    const fs = require('fs/promises');
+    fs.readFile.mockRejectedValue(new Error('No cache'));
+
+    await scraper.extractContent(mockPage, 'https://test.url', 'Test Page');
+
+    expect(mockSetTimeout).toHaveBeenCalled();
+
+    // Restore setTimeout
+    Object.defineProperty(global, 'setTimeout', {
+      value: originalSetTimeout,
+      writable: true,
+      configurable: true,
+    });
+    process.env.DEV_MODE = 'true';
+  });
 });
