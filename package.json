@@ -1,0 +1,33 @@
+{
+  "name": "threejs-docs-scraper",
+  "version": "1.0.0",
+  "description": "Web scraper for Three.js documentation",
+  "main": "src/scraper.js",
+  "scripts": {
+    "start": "node src/scraper.js",
+    "dev": "DEV_MODE=true node src/scraper.js",
+    "prod": "DEV_MODE=false node src/scraper.js",
+    "test": "jest --detectOpenHandles",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "clear-cache": "node src/scraper.js --clear-cache",
+    "prepare": "npm run lint && npm run format && npm test",
+    "update": "npm update --save && npm update --save-dev && npm install"
+  },
+  "dependencies": {
+    "puppeteer": "^22.15.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^8.57.0",
+    "@jest/globals": "^29.7.0",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^9.1.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.4.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
