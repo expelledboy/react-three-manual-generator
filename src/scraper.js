@@ -109,7 +109,7 @@ const config = {
   BASE_URL: 'https://threejs.org',
   DOCS_URL: 'https://threejs.org/docs/index.html#manual/en/introduction/Creating-a-scene',
   TIMEOUT: 30000,
-  REQUEST_DELAY: 1000,
+  REQUEST_DELAY: 2000,
   OUTPUT_DIR: 'docs',
   CACHE_DIR: '.cache',
   USE_CACHE: process.env.NO_CACHE !== 'true',
@@ -214,6 +214,19 @@ async function createBrowser() {
 }
 
 // Link extraction functions
+async function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function addRateLimitDelay() {
+  if (!config.DEV_MODE) {
+    log.debug(`Sleeping for ${config.REQUEST_DELAY}ms to avoid rate limiting`);
+    await sleep(config.REQUEST_DELAY);
+  }
+}
+
 async function extractLinks(page) {
   const maxRetries = 2;
   let attempts = 0;
@@ -223,6 +236,7 @@ async function extractLinks(page) {
     try {
       const startTime = Date.now();
       log.debug(`Navigating to docs URL: ${config.DOCS_URL}`);
+      await addRateLimitDelay();
       await page.goto(config.DOCS_URL, { waitUntil: 'networkidle0' });
       log.debug('Waiting for panel selector');
       await page.waitForSelector(config.SELECTORS.panel);
@@ -278,12 +292,6 @@ async function extractLinks(page) {
 }
 
 // Content extraction functions
-async function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 async function extractContent(page, url, title) {
   const startTime = Date.now();
   log.section(`Extracting Content: ${title}`);
@@ -299,13 +307,8 @@ async function extractContent(page, url, title) {
 
   try {
     log.debug(`Navigating to: ${url}`);
+    await addRateLimitDelay();
     await page.goto(url, { waitUntil: 'networkidle0' });
-
-    // Add delay between requests when not in DEV_MODE
-    if (!config.DEV_MODE) {
-      log.debug(`Sleeping for ${config.REQUEST_DELAY}ms to avoid rate limiting`);
-      await sleep(config.REQUEST_DELAY);
-    }
 
     try {
       log.debug('Waiting for iframe to appear');
